@@ -319,6 +319,15 @@ export default function Home() {
         {/* 結果表示 */}
         {property && step === "done" && (
           <div className="space-y-6">
+            <div className="flex justify-end">
+              <button
+                onClick={() => { setProperty(null); setCosts(null); setStep("idle"); setUrl(""); }}
+                className="text-gray-400 hover:text-gray-600 text-xl px-2"
+                title="閉じる"
+              >
+                ✕
+              </button>
+            </div>
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">
                 <PropertySummary property={property} />
