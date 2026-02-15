@@ -23,34 +23,46 @@ function SlopeVisual({ station }: { station: StationElevationInfo }) {
       : station.slopeCategory === "gentle"
       ? "bg-yellow-400"
       : "bg-red-400";
+  const gradientColor =
+    station.slopeCategory === "flat"
+      ? "text-green-700"
+      : station.slopeCategory === "gentle"
+      ? "text-yellow-700"
+      : "text-red-700";
 
   return (
-    <div className="flex items-end gap-1 h-12">
-      <div className="flex flex-col items-center w-8">
-        <span className="text-[10px] text-gray-400 mb-0.5">駅</span>
-        <div
-          className={`w-4 rounded-t ${isUphill ? "bg-gray-300" : barColor}`}
-          style={{ height: isUphill ? 12 : Math.max(12, barPercent * 0.48) }}
-        />
-      </div>
-      <div className="flex flex-col items-center justify-end flex-1 pb-1">
-        <span className="text-[10px] text-gray-500">
-          {station.slopeGradient > 0
-            ? `勾配${station.slopeGradient.toFixed(1)}%`
-            : ""}
-        </span>
-        <div className="w-full border-t border-dashed border-gray-300 relative">
-          <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-gray-400 text-xs">
-            {isUphill ? "↗" : station.elevationDiff < 0 ? "↘" : "→"}
+    <div className="space-y-2">
+      {/* 勾配を大きく表示 */}
+      {station.slopeGradient > 0 && (
+        <div className="text-center">
+          <span className={`text-2xl font-bold ${gradientColor}`}>
+            勾配 {station.slopeGradient.toFixed(1)}%
           </span>
         </div>
-      </div>
-      <div className="flex flex-col items-center w-8">
-        <span className="text-[10px] text-blue-500 mb-0.5">物件</span>
-        <div
-          className={`w-4 rounded-t ${isUphill ? barColor : "bg-blue-300"}`}
-          style={{ height: isUphill ? Math.max(12, barPercent * 0.48) : 12 }}
-        />
+      )}
+      {/* 棒グラフ */}
+      <div className="flex items-end gap-1 h-12">
+        <div className="flex flex-col items-center w-8">
+          <span className="text-[10px] text-gray-400 mb-0.5">駅</span>
+          <div
+            className={`w-4 rounded-t ${isUphill ? "bg-gray-300" : barColor}`}
+            style={{ height: isUphill ? 12 : Math.max(12, barPercent * 0.48) }}
+          />
+        </div>
+        <div className="flex flex-col items-center justify-end flex-1 pb-1">
+          <div className="w-full border-t border-dashed border-gray-300 relative">
+            <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-gray-400 text-lg">
+              {isUphill ? "↗" : station.elevationDiff < 0 ? "↘" : "→"}
+            </span>
+          </div>
+        </div>
+        <div className="flex flex-col items-center w-8">
+          <span className="text-[10px] text-blue-500 mb-0.5">物件</span>
+          <div
+            className={`w-4 rounded-t ${isUphill ? barColor : "bg-blue-300"}`}
+            style={{ height: isUphill ? Math.max(12, barPercent * 0.48) : 12 }}
+          />
+        </div>
       </div>
     </div>
   );
@@ -74,9 +86,11 @@ export default function StationInfo({ stations, stationElevations }: Props) {
 
   return (
     <div className="bg-white rounded-lg shadow p-6">
-      <h3 className="text-lg font-bold mb-2">最寄り駅 &amp; 坂道情報</h3>
+      <h3 className="text-lg font-bold mb-2">坂道情報</h3>
       <p className="text-xs text-gray-400 mb-4">
-        駅から物件までの高低差と坂の度合いを表示しています
+        各駅から物件までの勾配と高低差
+        <br />
+        <span className="text-red-500">※ 勾配率は平均値です。勾配判定はあくまで目安であり、体感は個人の感覚により異なります。</span>
       </p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {stations.map((st, i) => {
@@ -85,26 +99,10 @@ export default function StationInfo({ stations, stationElevations }: Props) {
 
           return (
             <div key={i} className="border rounded-lg p-4">
-              {/* 駅名 + 徒歩分数 */}
+              {/* 駅名 */}
               <div className="flex items-center justify-between mb-2">
-                <div>
-                  {st.line && (
-                    <span className="text-xs text-gray-500 block">
-                      {st.line}
-                    </span>
-                  )}
-                  <span className="font-bold text-lg">{st.station}駅</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm bg-gray-100 text-gray-600 px-2 py-1 rounded">
-                    {st.walkMinutes * 80 >= 1000
-                      ? `${(st.walkMinutes * 80 / 1000).toFixed(1)}km`
-                      : `${st.walkMinutes * 80}m`}
-                  </span>
-                  <span className="text-sm bg-blue-100 text-blue-700 px-2 py-1 rounded">
-                    徒歩{st.walkMinutes}分
-                  </span>
-                </div>
+                <span className="font-bold">{st.station}駅</span>
+                <span className="text-xs text-gray-500">徒歩{st.walkMinutes}分</span>
               </div>
 
               {/* 高低差情報 */}
@@ -156,10 +154,10 @@ export default function StationInfo({ stations, stationElevations }: Props) {
                       </span>
                       <span className="text-gray-600 ml-1">
                         {elev.slopeCategory === "flat"
-                          ? "（ほぼ平坦で歩きやすい）"
+                          ? "（勾配3%以下・ほぼ平坦で歩きやすい）"
                           : elev.slopeCategory === "gentle"
-                          ? "（多少の坂あり）"
-                          : "（急な坂道あり、自転車は大変）"}
+                          ? "（勾配3〜5%・多少の坂あり）"
+                          : "（勾配5%超・自転車は大変）"}
                       </span>
                     </div>
                   </div>

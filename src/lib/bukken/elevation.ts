@@ -34,9 +34,13 @@ export function haversineDistance(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export function classifySlope(elevationDiff: number): SlopeCategory {
-  const absDiff = Math.abs(elevationDiff);
-  if (absDiff <= SLOPE_THRESHOLDS.flat) return "flat";
-  if (absDiff <= SLOPE_THRESHOLDS.gentle) return "gentle";
+/**
+ * 勾配（%）で坂道を分類
+ * @param slopeGradient 勾配（%）= 高低差 / 水平距離 × 100
+ */
+export function classifySlope(slopeGradient: number): SlopeCategory {
+  const absGradient = Math.abs(slopeGradient);
+  if (absGradient <= SLOPE_THRESHOLDS.flat) return "flat";
+  if (absGradient <= SLOPE_THRESHOLDS.gentle) return "gentle";
   return "steep";
 }

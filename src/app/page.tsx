@@ -14,11 +14,15 @@ import { classifySlope } from "@/lib/bukken/elevation";
 import PropertySummary from "@/components/bukken/PropertySummary";
 import PhotoGallery from "@/components/bukken/PhotoGallery";
 import CostBreakdown from "@/components/bukken/CostBreakdown";
-import PropertyDetails from "@/components/bukken/PropertyDetails";
 import StationInfo from "@/components/bukken/StationInfo";
 import ElevationChart from "@/components/bukken/ElevationChart";
 import PropertyMap from "@/components/bukken/PropertyMap";
 import ParkingList from "@/components/bukken/ParkingList";
+import FavoriteButton from "@/components/bukken/FavoriteButton";
+import FavoriteList from "@/components/bukken/FavoriteList";
+import CompareView from "@/components/bukken/CompareView";
+import TransitSearch from "@/components/bukken/TransitSearch";
+import PropertyMemo from "@/components/bukken/PropertyMemo";
 
 type LoadingStep = "idle" | "scraping" | "geocoding" | "elevation" | "parking" | "done" | "error";
 
@@ -45,9 +49,12 @@ export default function Home() {
   const [hasGeoData, setHasGeoData] = useState(false);
   const [parkingLots, setParkingLots] = useState<ParkingLot[]>([]);
   const [elevationProfiles, setElevationProfiles] = useState<StationElevationProfile[]>([]);
+  const [showFavorites, setShowFavorites] = useState(false);
+  const [showCompare, setShowCompare] = useState(false);
+  const [favKey, setFavKey] = useState(0); // FavoriteListの再レンダリング用
 
-  const analyze = useCallback(async () => {
-    if (!url.trim()) return;
+  const analyzeUrl = useCallback(async (targetUrl: string) => {
+    if (!targetUrl.trim()) return;
     setStep("scraping");
     setError("");
     setProperty(null);
@@ -64,7 +71,7 @@ export default function Home() {
       const scrapeRes = await fetch("/api/bukken/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ url: targetUrl.trim() }),
       });
       const scrapeData = await scrapeRes.json();
       if (!scrapeRes.ok) {
@@ -140,7 +147,7 @@ export default function Home() {
             elevation,
             propertyElevation: propElev.elevation,
             elevationDiff: diff,
-            slopeCategory: classifySlope(diff),
+            slopeCategory: classifySlope(slopeGradient),
             slopeGradient,
           };
         });
@@ -204,11 +211,11 @@ export default function Home() {
       setError(e instanceof Error ? e.message : "エラーが発生しました");
       setStep("error");
     }
-  }, [url]);
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    analyze();
+    analyzeUrl(url);
   };
 
   const isLoading = step !== "idle" && step !== "done" && step !== "error";
@@ -216,17 +223,63 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white shadow-sm">
-        <div className="max-w-4xl mx-auto px-4 py-6">
-          <h1 className="text-2xl font-bold text-gray-900">
-            賃貸物件分析ツール
-          </h1>
-          <p className="text-sm text-gray-500 mt-1">
-            SUUMOのURLを入力して、物件の詳細・初期費用・高低差を分析
-          </p>
+        <div className="max-w-4xl mx-auto px-4 py-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">
+              賃貸物件分析ツール
+            </h1>
+            <p className="text-sm text-gray-500 mt-1">
+              SUUMOのURLを入力して、物件の詳細・初期費用・高低差を分析
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setShowCompare((v) => !v); setShowFavorites(false); }}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                showCompare
+                  ? "bg-blue-100 text-blue-700"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              比較
+            </button>
+            <button
+              onClick={() => { setShowFavorites((v) => !v); setShowCompare(false); }}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                showFavorites
+                  ? "bg-yellow-100 text-yellow-700"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              <span className="text-lg">★</span>
+              お気に入り
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="max-w-4xl mx-auto px-4 py-8">
+        {/* 比較ビュー */}
+        {showCompare && (
+          <div className="mb-8">
+            <CompareView onClose={() => setShowCompare(false)} />
+          </div>
+        )}
+
+        {/* お気に入り一覧 */}
+        {showFavorites && (
+          <div className="mb-8">
+            <FavoriteList
+              key={favKey}
+              onSelect={(selectedUrl) => {
+                setUrl(selectedUrl);
+                setShowFavorites(false);
+                analyzeUrl(selectedUrl);
+              }}
+            />
+          </div>
+        )}
+
         {/* URL入力フォーム */}
         <form onSubmit={handleSubmit} className="mb-8">
           <div className="flex gap-3">
@@ -266,22 +319,33 @@ export default function Home() {
         {/* 結果表示 */}
         {property && step === "done" && (
           <div className="space-y-6">
-            <PropertySummary property={property} />
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <PropertySummary property={property} />
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <FavoriteButton
+                property={property}
+                onToggle={() => setFavKey((k) => k + 1)}
+              />
+            </div>
 
             {property.images && property.images.length > 0 && (
               <PhotoGallery images={property.images} propertyName={property.name} />
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {costs && <CostBreakdown costs={costs} />}
-              <PropertyDetails property={property} />
-            </div>
+            {costs && <CostBreakdown costs={costs} />}
 
             {property.stations.length > 0 && (
               <StationInfo
                 stations={property.stations}
                 stationElevations={stationElevations.length > 0 ? stationElevations : undefined}
               />
+            )}
+
+            {property.stations.length > 0 && (
+              <TransitSearch stations={property.stations} />
             )}
 
             {hasGeoData && propertyElevation && stationElevationData.length > 0 && (
@@ -300,6 +364,8 @@ export default function Home() {
             {parkingLots.length > 0 && (
               <ParkingList parkingLots={parkingLots} />
             )}
+
+            <PropertyMemo propertyUrl={property.url} />
 
             <div className="text-center pt-4 pb-8">
               <a

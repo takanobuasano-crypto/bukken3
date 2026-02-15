@@ -47,17 +47,13 @@ export async function geocodeStation(
     const viewbox = `${near.lng - delta},${near.lat + delta},${near.lng + delta},${near.lat - delta}`;
     try {
       const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=jp&limit=1&viewbox=${viewbox}&bounded=1`;
-      console.log(`[geocode] station="${stationName}" bounded query: ${nomUrl}`);
       const res = await fetch(nomUrl, {
         headers: { "User-Agent": "BukkenAnalyzer/1.0" },
       });
       if (res.ok) {
         const data = await res.json();
-        console.log(`[geocode] station="${stationName}" bounded results:`, data.length, data[0]?.display_name);
         if (data && data.length > 0) {
-          const result = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
-          console.log(`[geocode] station="${stationName}" → ${result.lat}, ${result.lng}`);
-          return result;
+          return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
         }
       }
     } catch (e) {
@@ -66,8 +62,5 @@ export async function geocodeStation(
   }
 
   // フォールバック: 通常の住所検索
-  console.log(`[geocode] station="${stationName}" falling back to general search`);
-  const fallback = await geocodeAddress(query);
-  console.log(`[geocode] station="${stationName}" fallback →`, fallback);
-  return fallback;
+  return await geocodeAddress(query);
 }

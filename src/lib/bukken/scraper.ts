@@ -1,18 +1,24 @@
 import * as cheerio from "cheerio";
-import type { PropertyData, StationAccess } from "./types";
+import type { PropertyData, StationAccess, NearbyFacility } from "./types";
 
 function parseJapaneseNumber(text: string): number {
   if (!text) return 0;
   const cleaned = text.replace(/,/g, "").replace(/円/g, "").trim();
 
-  // 「5.5万円」のようなパターン
+  // 「5.5万円」「5.5万」のようなパターン
   const manMatch = cleaned.match(/([\d.]+)\s*万/);
   if (manMatch) {
     return Math.round(parseFloat(manMatch[1]) * 10000);
   }
 
-  const num = parseInt(cleaned, 10);
-  return isNaN(num) ? 0 : num;
+  // テキスト中の数値を抽出（「鍵交換費用16500円」→ 16500）
+  const numMatch = cleaned.match(/(\d[\d,]*)/);
+  if (numMatch) {
+    const num = parseInt(numMatch[1].replace(/,/g, ""), 10);
+    return isNaN(num) ? 0 : num;
+  }
+
+  return 0;
 }
 
 function parseMonths(text: string, rent: number): number {
@@ -29,7 +35,8 @@ function parseMonths(text: string, rent: number): number {
 }
 
 function parseArea(text: string): number {
-  const match = text.match(/([\d.]+)\s*m/);
+  // 「40.07m²」「40.07ｍ²」「40.07㎡」「40.07平米」等
+  const match = text.match(/([\d.]+)\s*(?:[mｍ][²2]|㎡|平米)/);
   return match ? parseFloat(match[1]) : 0;
 }
 
@@ -192,7 +199,29 @@ export function parseSuumoHtml(html: string, url: string): PropertyData {
     }
   });
 
-  // テーブルデータを検索するヘルパー (部分一致)
+  // ── dl（定義リスト）からもデータ抽出 ──
+  $("dl").each((_, dl) => {
+    const dts = $(dl).find("dt");
+    const dds = $(dl).find("dd");
+    dts.each((j, dtEl) => {
+      const dt = $(dtEl).text().trim();
+      const dd = dds.eq(j).text().trim();
+      if (dt && dd && !rawTableData.find((r) => r.th === dt && r.td === dd)) {
+        rawTableData.push({ th: dt, td: dd });
+      }
+    });
+  });
+
+  // ── SUUMOの property_data-title / property_data-body ペア ──
+  $(".property_data-title").each((_, titleEl) => {
+    const title = $(titleEl).text().trim();
+    const body = $(titleEl).next(".property_data-body").text().trim();
+    if (title && body && !rawTableData.find((r) => r.th === title && r.td === body)) {
+      rawTableData.push({ th: title, td: body });
+    }
+  });
+
+  // テーブル/dlデータを検索するヘルパー (部分一致)
   function findTableValue(...keywords: string[]): string {
     for (const kw of keywords) {
       const found = rawTableData.find((r) => r.th.includes(kw));
@@ -247,16 +276,37 @@ export function parseSuumoHtml(html: string, url: string): PropertyData {
   // ── 敷金・礼金 ──
   let deposit = 0;
   let keyMoney = 0;
-  const depositText = findTableValue("敷金");
-  const keyMoneyText = findTableValue("礼金");
-  if (depositText) {
-    deposit = parseMonths(depositText, rent) || parseJapaneseNumber(depositText);
+
+  // SUUMOの「敷金/礼金」結合フィールド対応: 「- / 13.5万円」「1ヶ月 / 1ヶ月」等
+  const combinedDkText = findTableValue("敷金/礼金", "敷金／礼金");
+  if (combinedDkText) {
+    const parts = combinedDkText.split(/\s*[/／]\s*/);
+    if (parts.length >= 2) {
+      const depositPart = parts[0].trim();
+      const keyMoneyPart = parts[1].trim();
+      if (depositPart !== "-" && depositPart !== "なし" && depositPart !== "") {
+        deposit = parseMonths(depositPart, rent) || parseJapaneseNumber(depositPart);
+      }
+      if (keyMoneyPart !== "-" && keyMoneyPart !== "なし" && keyMoneyPart !== "") {
+        keyMoney = parseMonths(keyMoneyPart, rent) || parseJapaneseNumber(keyMoneyPart);
+      }
+    }
   }
-  if (keyMoneyText) {
-    deposit = parseMonths(keyMoneyText, rent) || parseJapaneseNumber(keyMoneyText);
+
+  // 個別フィールドから取得（結合フィールドで取れなかった場合）
+  if (!deposit && !keyMoney && !combinedDkText) {
+    const depositText = findTableValue("敷金");
+    const keyMoneyText = findTableValue("礼金");
+    if (depositText) {
+      deposit = parseMonths(depositText, rent) || parseJapaneseNumber(depositText);
+    }
+    if (keyMoneyText) {
+      keyMoney = parseMonths(keyMoneyText, rent) || parseJapaneseNumber(keyMoneyText);
+    }
   }
-  // 「敷/礼」 や 「敷金N万円/礼金N万円」 パターン
-  if (!deposit && !keyMoney) {
+
+  // span等から「敷金N万円」「礼金N万円」パターン
+  if (!deposit && !keyMoney && !combinedDkText) {
     $("span, div, td").each((_, el) => {
       const text = $(el).text().trim();
       const dMatch = text.match(/敷金?\s*([\d.]+万|なし|-)/);
@@ -282,9 +332,55 @@ export function parseSuumoHtml(html: string, url: string): PropertyData {
     }
   }
 
-  // ── 面積 ──
-  const areaText = findTableValue("専有面積", "面積");
-  const area = parseArea(areaText);
+  // ── 面積（SUUMOの部屋情報から取得） ──
+  let areaText = findTableValue("専有面積", "面積", "広さ");
+  let area = parseArea(areaText);
+  // 結合ヘッダーから面積を探す（例: "間取り詳細面積" のようなケース）
+  if (!area) {
+    for (const row of rawTableData) {
+      if (area) break;
+      const m = row.td.match(/([\d.]+)\s*(?:[mｍ][²2]|㎡|平米)/);
+      if (m) {
+        const val = parseFloat(m[1]);
+        if (val >= 10 && val <= 500) {
+          area = val;
+          areaText = row.td;
+        }
+      }
+    }
+  }
+  // SUUMOの部屋情報セクションのセレクタから取得
+  if (!area) {
+    $(".property_view_detail-body, .property_data, .l-property_body, .property_view_main").find("*").each((_, el) => {
+      if (area) return;
+      const text = $(el).clone().children().remove().end().text().trim();
+      const match = text.match(/([\d.]+)\s*(?:[mｍ][²2]|㎡|平米)/);
+      if (match) {
+        const val = parseFloat(match[1]);
+        if (val >= 10 && val <= 500) {
+          area = val;
+          areaText = text;
+        }
+      }
+    });
+  }
+  // gapDataから補完
+  if (!area && gapData?.menseki) {
+    const val = parseFloat(String(gapData.menseki));
+    if (val >= 10 && val <= 500) {
+      area = val;
+    }
+  }
+  // JavaScript変数 mensekiDisp から補完
+  if (!area) {
+    const mensekiMatch = html.match(/mensekiDisp\s*[:=]\s*"([\d.]+)"/);
+    if (mensekiMatch) {
+      const val = parseFloat(mensekiMatch[1]);
+      if (val >= 10 && val <= 500) {
+        area = val;
+      }
+    }
+  }
 
   // ── 階数 ──
   let floor = "";
@@ -344,49 +440,54 @@ export function parseSuumoHtml(html: string, url: string): PropertyData {
   // ── 契約期間 ──
   const contractType = findTableValue("契約期間");
 
-  // ── 駅情報 ──
-  // SUUMO ではページ内テキストノードに「〇〇線/〇〇駅 歩N分」がある
+  // ── 駅情報（SUUMOのアクセス情報ベース） ──
   const stations: StationAccess[] = [];
   const seenStations = new Set<string>();
 
-  // まずセレクタベースで試行
-  $(".property_view_detail-station li, .property_view_traffic li").each((_, li) => {
-    parseStationText($(li).text().trim(), stations);
-  });
-
-  // テーブルの「交通」フィールド
-  const trafficText = findTableValue("交通", "アクセス");
-  if (trafficText && stations.length === 0) {
-    const lines = trafficText.split(/\n/).filter(Boolean);
-    for (const line of lines) {
-      parseStationText(line.trim(), stations);
+  function addStation(text: string) {
+    const beforeCount = stations.length;
+    parseStationText(text, stations);
+    if (stations.length > beforeCount) {
+      const last = stations[stations.length - 1];
+      const key = `${last.station}-${last.walkMinutes}`;
+      if (seenStations.has(key)) {
+        stations.pop();
+      } else {
+        seenStations.add(key);
+      }
     }
   }
 
-  // 全テキストノードから駅情報をスキャン（最も確実な方法）
+  // 1. セレクタベースで試行（SUUMO物件詳細の交通セクション）
+  $(".property_view_detail-station li, .property_view_traffic li").each((_, li) => {
+    addStation($(li).text().trim());
+  });
+
+  // 2. テーブルの「交通」フィールド
   if (stations.length === 0) {
-    $("*").each((_, el) => {
+    const trafficText = findTableValue("交通", "アクセス");
+    if (trafficText) {
+      const lines = trafficText.split(/\n/).filter(Boolean);
+      for (const line of lines) {
+        addStation(line.trim());
+      }
+    }
+  }
+
+  // 3. フォールバック: メインコンテンツ領域内のみスキャン（関連物件等を除外）
+  if (stations.length === 0) {
+    // SUUMOの物件詳細エリアに限定（記事下部のおすすめ物件等を除外）
+    const mainArea = $(".property_view_detail, .section_h1, .l-contents, #contents, main, article").first();
+    const searchRoot = mainArea.length ? mainArea : $("body");
+    searchRoot.find("*").each((_, el) => {
+      if (stations.length >= 3) return false; // 3駅で打ち切り
       const text = $(el).clone().children().remove().end().text().trim();
-      // 「〇〇線/〇〇駅 歩N分」パターン
       if (text.includes("駅") && text.includes("分") && text.length < 100 && text.length > 5) {
-        const beforeCount = stations.length;
-        parseStationText(text, stations);
-        // 重複除去
-        if (stations.length > beforeCount) {
-          const last = stations[stations.length - 1];
-          const key = `${last.station}-${last.walkMinutes}`;
-          if (seenStations.has(key)) {
-            stations.pop();
-          } else {
-            seenStations.add(key);
-          }
-        }
+        addStation(text);
       }
     });
   }
 
-  // 最初の3駅のみ（物件の最寄り駅として表示されるもの）
-  // ページ下部の他物件の駅情報を除外するため、最初に見つかった3つに限定
   const propertyStations = stations.slice(0, 3);
 
   // ── 設備 ──
@@ -445,23 +546,197 @@ export function parseSuumoHtml(html: string, url: string): PropertyData {
     images.unshift(ogImage);
   }
 
-  // ── 保険・損保情報から管理費や追加費用を取得 ──
-  const insuranceText = findTableValue("損保", "保険");
-  const parkingText = findTableValue("駐車場");
+  // ── 初期費用関連のスクレイピング ──
 
-  // 損保テーブルの「2万円2年」のようなパターンから敷金/礼金を抽出
-  if (!deposit && !keyMoney) {
-    const dkText = findTableValue("損保駐車場");
-    if (dkText) {
-      const costMatch = dkText.match(/([\d.]+)万円/);
-      if (costMatch) {
-        // これは損保費用なので敷金ではない
+  // 仲介手数料
+  const brokerageText = findTableValue("仲介手数料");
+  let brokerageFee = 0;
+  if (brokerageText) {
+    // 「家賃1ヶ月分+税」「家賃の1.1ヶ月分」等
+    const monthMatch = brokerageText.match(/([\d.]+)\s*ヶ?月/);
+    if (monthMatch) {
+      const months = parseFloat(monthMatch[1]);
+      // 「税」「税込」が含まれていればそのまま、なければ×1.1（税込）
+      if (brokerageText.includes("税")) {
+        brokerageFee = Math.round(rent * months);
+      } else {
+        brokerageFee = Math.round(rent * months * 1.1);
+      }
+    } else {
+      brokerageFee = parseJapaneseNumber(brokerageText);
+    }
+  }
+
+  // 保証会社
+  const guaranteeText = findTableValue("保証会社", "保証金", "保証料");
+  let guaranteeFee = 0;
+  if (guaranteeText) {
+    // 「初回のみ...33000円」のパターンを優先
+    const initialMatch = guaranteeText.match(/初回[^、,]*?([\d,]+)\s*円/);
+    if (initialMatch) {
+      guaranteeFee = parseInt(initialMatch[1].replace(/,/g, ""), 10);
+    } else {
+      const monthMatch = guaranteeText.match(/([\d.]+)\s*ヶ?月/);
+      if (monthMatch) {
+        guaranteeFee = Math.round(rent * parseFloat(monthMatch[1]));
+      } else {
+        // 「総賃料の50%」等（「毎月」を含む場合は月額なので初期費用としてはスキップ）
+        const pctMatch = guaranteeText.match(/([\d.]+)\s*[%％]/);
+        if (pctMatch && !guaranteeText.includes("毎月")) {
+          guaranteeFee = Math.round((rent + managementFee) * parseFloat(pctMatch[1]) / 100);
+        } else if (!pctMatch) {
+          guaranteeFee = parseJapaneseNumber(guaranteeText);
+        }
       }
     }
   }
 
-  // ── 仲介手数料 ──
-  const brokerageText = findTableValue("仲介手数料");
+  // 火災保険（損保）
+  const insuranceText = findTableValue("損保", "火災保険", "保険");
+  let fireInsurance = 0;
+  if (insuranceText) {
+    fireInsurance = parseJapaneseNumber(insuranceText);
+  }
+
+  // 鍵交換（単独フィールド）
+  const keyExchangeText = findTableValue("鍵交換", "カギ交換");
+  let keyExchange = 0;
+  if (keyExchangeText) {
+    keyExchange = parseJapaneseNumber(keyExchangeText);
+  }
+
+  // その他費用（クリーニング代、消毒費用、サポート料等）
+  const otherCosts: { label: string; amount: number; text: string }[] = [];
+  const otherCostKeys = [
+    { key: "クリーニング", label: "クリーニング代" },
+    { key: "室内清掃", label: "室内清掃費" },
+    { key: "消毒", label: "消毒費用" },
+    { key: "除菌", label: "除菌費用" },
+    { key: "安心サポート", label: "安心サポート" },
+    { key: "24時間サポート", label: "24時間サポート" },
+    { key: "抗菌", label: "抗菌施工費" },
+    { key: "入居安心", label: "入居安心サービス" },
+  ];
+  for (const { key, label } of otherCostKeys) {
+    const text = findTableValue(key);
+    if (text) {
+      const amount = parseJapaneseNumber(text);
+      if (amount > 0) {
+        otherCosts.push({ label, amount, text });
+      }
+    }
+  }
+
+  // ── 「ほか初期費用」フィールド ──
+  // SUUMOの「ほか初期費用」: 「合計2.2万円（内訳：鍵交換代2.2万円）」
+  // 「合計5.5万円（内訳：鍵交換代2.2万円／クリーニング代3.3万円）」等
+  const otherInitialText = findTableValue("ほか初期費用", "その他初期費用", "その他費用");
+  if (otherInitialText) {
+    // 内訳をパース: 「鍵交換代2.2万円」「クリーニング代3.3万円」等
+    const breakdownMatch = otherInitialText.match(/内訳[：:](.+?)(?:\)|）|$)/);
+    if (breakdownMatch) {
+      const breakdownStr = breakdownMatch[1];
+      // 「／」「/」「、」区切りで各項目を分割
+      const items = breakdownStr.split(/[／/、,]/).filter(Boolean);
+      for (const item of items) {
+        const trimmed = item.trim();
+        const amountMatch = trimmed.match(/([\d,.]+)\s*万?\s*円/);
+        const amount = amountMatch ? parseJapaneseNumber(trimmed) : 0;
+        if (amount <= 0) continue;
+
+        // 鍵交換代は専用フィールドに
+        if (trimmed.includes("鍵交換") || trimmed.includes("カギ交換")) {
+          if (!keyExchange) {
+            keyExchange = amount;
+          }
+        } else {
+          // ラベルを抽出（金額部分を除去）
+          const label = trimmed.replace(/[\d,.]+\s*万?\s*円.*$/, "").trim() || trimmed;
+          // 既に同じラベルが追加済みでなければ追加
+          if (!otherCosts.find((c) => c.label === label)) {
+            otherCosts.push({ label, amount, text: trimmed });
+          }
+        }
+      }
+    } else {
+      // 内訳がない場合、合計金額だけでも取得
+      const totalAmount = parseJapaneseNumber(otherInitialText);
+      if (totalAmount > 0 && !otherCosts.find((c) => c.label === "その他初期費用")) {
+        otherCosts.push({ label: "その他初期費用", amount: totalAmount, text: otherInitialText });
+      }
+    }
+  }
+
+  // ── 敷地内駐車場 ──
+  let parkingText = findTableValue("駐車場");
+  // 「付無料/平置駐」→「無料 / 平置き」等に整形
+  if (parkingText) {
+    parkingText = parkingText
+      .replace(/^付/, "")
+      .replace(/平置駐$/, "平置き")
+      .replace(/機械駐$/, "機械式")
+      .replace(/\//g, " / ")
+      .trim();
+    if (parkingText === "-" || parkingText === "無") {
+      parkingText = "なし";
+    }
+  }
+
+  // ── 周辺情報 ──
+  const nearbyFacilities: NearbyFacility[] = [];
+  // SUUMOの周辺情報: <td class="data_around"><ul><li>施設名（カテゴリ）までNNNm</li>...</ul></td>
+  $(".data_around li, td[class*='around'] li").each((_, li) => {
+    const text = $(li).text().trim();
+    // 「オーケー港北店（スーパー）まで871m」パターン
+    const match = text.match(/^(.+?)（(.+?)）まで([\d,]+)m$/);
+    if (match) {
+      nearbyFacilities.push({
+        name: match[1].trim(),
+        category: match[2].trim(),
+        distanceM: parseInt(match[3].replace(/,/g, ""), 10),
+      });
+    }
+  });
+  // テーブルの「周辺情報」からもフォールバック
+  if (nearbyFacilities.length === 0) {
+    const nearbyText = findTableValue("周辺情報");
+    if (nearbyText) {
+      const lines = nearbyText.split(/\n/).filter(Boolean);
+      for (const line of lines) {
+        const match = line.trim().match(/^(.+?)(?:（|[\(])(.+?)(?:）|[\)])まで([\d,]+)m$/);
+        if (match) {
+          nearbyFacilities.push({
+            name: match[1].trim(),
+            category: match[2].trim(),
+            distanceM: parseInt(match[3].replace(/,/g, ""), 10),
+          });
+        }
+      }
+    }
+  }
+
+  // ── POINT（おすすめポイント） ──
+  let point = "";
+  // SUUMOの「POINT」セクション: クラス名に "point" を含む要素
+  $("*").each((_, el) => {
+    if (point) return;
+    const cls = $(el).attr("class") || "";
+    if (cls.includes("point") || cls.includes("Point") || cls.includes("POINT")) {
+      const text = $(el).text().trim();
+      // 「POINT」見出し部分を除去して本文だけ取得
+      const cleaned = text.replace(/^POINT\s*/i, "").trim();
+      if (cleaned && cleaned.length > 5 && cleaned.length < 500) {
+        point = cleaned;
+      }
+    }
+  });
+  // テーブルからも探す
+  if (!point) {
+    const pointText = findTableValue("POINT", "ポイント", "おすすめ");
+    if (pointText) {
+      point = pointText;
+    }
+  }
 
   return {
     name,
@@ -481,16 +756,17 @@ export function parseSuumoHtml(html: string, url: string): PropertyData {
     contractType,
     images,
     url,
-    // デバッグ用に追加情報をログ
-    ...(process.env.NODE_ENV === "development"
-      ? {
-          _debug: {
-            insuranceText,
-            parkingText,
-            brokerageText,
-            rawStationCount: stations.length,
-          },
-        }
-      : {}),
+    brokerageFee,
+    brokerageFeeText: brokerageText,
+    guaranteeFee,
+    guaranteeFeeText: guaranteeText,
+    fireInsurance,
+    fireInsuranceText: insuranceText,
+    keyExchange,
+    keyExchangeText: keyExchangeText,
+    otherCosts,
+    parking: parkingText,
+    point,
+    nearbyFacilities,
   } as PropertyData;
 }

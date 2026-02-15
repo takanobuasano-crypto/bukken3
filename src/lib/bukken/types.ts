@@ -25,6 +25,25 @@ export interface PropertyData {
   contractType: string; // 契約期間
   images: string[]; // 物件画像URL
   url: string;
+  // 初期費用関連（SUUMOから取得、0は未掲載）
+  brokerageFee: number; // 仲介手数料（円）
+  brokerageFeeText: string; // 仲介手数料の原文（例: "家賃1ヶ月分+税"）
+  guaranteeFee: number; // 保証会社利用料（円）
+  guaranteeFeeText: string; // 保証会社の原文
+  fireInsurance: number; // 火災保険料（円）
+  fireInsuranceText: string; // 火災保険の原文（例: "要 2万円 2年"）
+  keyExchange: number; // 鍵交換費用（円）
+  keyExchangeText: string; // 鍵交換の原文
+  otherCosts: { label: string; amount: number; text: string }[]; // その他費用（クリーニング代等）
+  parking: string; // 敷地内駐車場情報（例: "付無料/平置駐"）
+  point: string; // SUUMOのPOINT（おすすめポイント）
+  nearbyFacilities: NearbyFacility[]; // 周辺情報
+}
+
+export interface NearbyFacility {
+  name: string; // 施設名（例: "オーケー港北店"）
+  category: string; // カテゴリ（例: "スーパー"）
+  distanceM: number; // 距離（m）
 }
 
 export interface InitialCostItem {
@@ -35,9 +54,11 @@ export interface InitialCostItem {
 }
 
 export interface InitialCostBreakdown {
-  items: InitialCostItem[];
-  total: number;
-  estimatedTotal: number;
+  suumoItems: InitialCostItem[]; // SUUMOに掲載されている費用
+  referenceItems: InitialCostItem[]; // 一般的に必要な費用（参考）
+  suumoTotal: number;
+  referenceTotal: number;
+  grandTotal: number;
 }
 
 export interface Coordinates {

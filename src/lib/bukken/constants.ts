@@ -8,9 +8,9 @@ export const DEFAULT_COSTS = {
 } as const;
 
 export const SLOPE_THRESHOLDS = {
-  flat: 5, // 0-5m: 平坦
-  gentle: 15, // 5-15m: ゆるやか
-  // 15m+: 急坂
+  flat: 3, // 0-3%: 平坦
+  gentle: 5, // 3-5%: ゆるやか
+  // 5%+: 急坂
 } as const;
 
 export const SLOPE_LABELS: Record<SlopeCategory, string> = {
